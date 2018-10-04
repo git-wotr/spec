@@ -1,0 +1,270 @@
+# Copyright (C) 2018 Jan Malakhovski
+# Permission is granted to copy, distribute and/or modify this document
+# under the terms of the GNU Free Documentation License, Version 1.3
+# or any later version published by the Free Software Foundation;
+# with no Invariant Sections, no Front-Cover Texts, and no Back-Cover Texts.
+# A copy of the license is included in the section entitled "GNU
+# Free Documentation License".
+
+* Definitions and data formats
+
+The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "NOT RECOMMENDED",
+"MAY", and "OPTIONAL" in this document are to be interpreted as described in RFC2119 when, and only when, they appear in all
+capitals, as shown here.
+
+The plain-text data thing in yet undecided format described below is a "review", review is signed by gpg and turned into a
+"packet" (PGP packet of the review and signature together), that is then base64 encoded and is appended to "packet-list", which
+is stored in a separate git branch called "review-branch" indexed by commit-id (before patch-id changes were merged, currently
+managed by git-notes, but that might change). All date values are UNIX timestamps.
+
+* Verification Process
+
+Commits in review-branch MUST be signed, ALL commits MUST be validated before interpreting, invalid signature on review-branch
+commit MUST cause a critical error.
+
+Commits in review-branch MUST monotonically increase their "author" and "commiter" dates by alternating the two types. I.e. the
+following MUST be observed:
+
+    0 <= commit_1_author_date <= commit_1_commiter_date <= commit2_author_date <= commit2_commiter_date <= ...
+
+Any other sequence MUST cause a critical error.
+
+Packets MUST always appended to the end of the packet-list, insertion anywhere except at the end of the packet-list MUST cause a
+critical error.
+
+Packets with signatures by the same key in review-list MUST monotonically increase their packet's "date" field, failure to
+observe that MUST cause a critical error.
+
+The "packet's-commit-date" is the earliest of "commiter" or "author" dates of the commit introducing the given packet into the
+review-branch.
+
+Packet's "date" field MUST be <= than its "packet's-commit-date", failure to observe that MUST cause a critical error.
+
+Note that the above still allows packet's "date" field to be interpreted as a "serial-number" as long as the packet itself was
+not signed with "expire date" field set, which is discussed below.
+
+When interpreting packet-list only the packet with largest "date" field (serial-number) MUST be considered for each signing key,
+all other packets for the same key MUST be ignored.
+
+When verifying a packet "GOODSIG" gpg status means the packet SHOULD be accepted as authoritative, "EXPKEYSIG" is explained
+below, "EXPSIG", "REVKEYSIG" and "ERRSIG with NO_PUBKEY" means the packet MUST be ignored, all other statuses, including "BADSIG"
+and "ERRSIG without NO_PUBKEY", MUST cause a critical error (can be made into a warning, in case gpg guys break something, I
+guess).
+
+"REVKEYSIG" MAY cause a warning.
+
+Note that by using "expire date" in the packet and "EXPSIG" gpg status code you can have reviews that automatically rescind
+themselves. I doubt this would be used much, but it can be useful in some use cases, no need to prohibit that, I think.
+
+"EXPKEYSIG" gpg status code means the key's own signature has expired, it SHOULD be interpreted as "GOODSIG" if
+packet's-commit-date is <= than key's expiration date, MUST be interpreted as "ERRSIG with NO_PUBKEY" otherwise.
+
+To reiterate, the following (among other things, i.e. not "iff") MUST be observed for packet to be accepted as authoritative:
+
+    packet's "date" field <= packet's-commit-date <= author's key own "expire date"
+
+Failure to observe the first comparison causes a critical error, failure of the second only causes the packet to be ignored.
+(Because expired key can be extended after the fact by re-self-signing.)
+
+Failure to interpret the contents of "GOODSIG" review MUST cause a warning and MUST cause such a review to be ignored.
+
+Side note:
+
+   If we allow a review encoded in the packet to have its own "date" field (which I don't like for the following), it MUST be <=
+packet's-commit-date and >= packet's "date" field, failure to observe that MUST cause a critical error.
+
+   I.e. the following MUST be observed:
+
+       packet's "date" field <= review's "date" field <= packet's-commit-date <= author's key own "expire date"
+
+   The problem with allowing that is you would have to interpret non-authoritative packets too to keep the above semantics of
+"everything that looks like MITM causes a critical error so that everyone would immediately notice". Hence, I'd rather not have
+these dates there.
+
+* Review format (given in git-object-like form)
+
+Things after "#" and whitespace before are not in the grammar (comments)
+
+#+BEGIN_example
+<header>
+<metadata fields>
+
+<comment>
+#+END_example
+
+Should be read as "By signing this text I certify that I validated the following ...".
+
+** Header
+
+Either
+
+#+BEGIN_example
+commit <commit-id> diff
+[with <commit-id> diff
+with <commit-id> diff
+with <commit-id> diff]
+#+END_example
+
+meaning that the reviewer certifies the "diff" of this "commit" when applied to the parent of the first "<commit-id>" together
+"with" commit "diff"s of the later "commit-id"s
+
+or
+
+#+BEGIN_example
+commit <commit-id> state
+[of <filepath relative to repository root>
+of <filepath>
+...
+of <filepath>] # empty list means "the whole thing"
+#+END_example
+
+meaning that the reviewer certifies the "state" "of" the following "filepaths" in "<commit-id>" tree.
+
+Can be similarly extended for =tree <tree-id> diff=, =tree <tree-id> state=, =patch <patch-id> diff=. As you see, the difference
+between "diff" and "patch" is intentional here, "diff" is "change" in the abstract sense (I can agree to replace "diff" with
+"change" even), while "patch" is "exactly this patch file".
+
+** Metadata fields
+
+#+BEGIN_example
+# "while having archived the following" when reading "... I certify ..."
+[context-understanding (medium|high|author)] # low by default, indicates understanding of the context of the diff
+[diff-understanding (medium|high)]           # low by default, indicates understanding of the diff itself
+[thoroughness (medium|high)]                 # low by default, indicates the effort spent checking it does what it claims to do
+# "with the following" when reading "... I certify ..."
+[result (!|-|+)]                             # 0 by default, this rough equivalent of "trust" of crev
+[result-otherwise (!|-|+)]                   # "!" by default with header conditions, "0" without header conditions, this line
+MUST not be present without header conditions, this is the "result" when not all header conditions are met
+# "and I think this should be assigned the following"
+[priority (medium|high|panic)]               # low by default, doesn't influence anything, should be used for grabbing attention
+of other reviewers
+#+END_example
+
+"context-understanding":
+
+- "low"    = "I might have seen this subsystem before.",
+- "medium" = "I looked into this subsystem intentionally and maybe made little changes there before.",
+- "high"   = "I made big changes there before.",
+- "author" = "I wrote a good chunk of this subsystem myself, I know it in and out".
+
+"diff-understanding": self-explanatory.
+
+"thoroughness":
+
+- "low"    = "glanced over",
+- "medium" = "read, evaluated/tested",
+- "high"   = "spent a bunch of time playing with it".
+
+"result":
+
+- "!" = "has a security issue!",
+- "-" = "I disapprove",
+- "0" = "FYI",
+- "+" = "I approve".
+
+"priority": self-explanatory.
+
+** Examples
+
+"Nothing looks bad, but don't trust me" would be
+
+#+BEGIN_example
+<header>
+#context-understanding low
+#diff-understanding low
+#thoroughness low
+result +
+
+LGTM.
+#+END_example
+
+Drive-by LGTM in a system you know well would be
+
+#+BEGIN_example
+<header>
+context-understanding high
+diff-understanding high
+#thoroughness low
+result +
+
+LGTM.
+#+END_example
+
+Thorough LGTM in a your own subsystem would be
+
+#+BEGIN_example
+<header>
+context-understanding author
+diff-understanding high
+thoroughness high
+result +
+
+Running on top of this for a month.
+#+END_example
+
+"Nothing looks bad, but please can someone else review this" would be
+
+#+BEGIN_example
+<header>
+#context-understanding low
+#diff-understanding low
+#thoroughness low
+#result 0
+priority high
+
+Please, can somebody else review this?
+#+END_example
+
+"This looks very bad!" could be
+
+#+BEGIN_example
+<header>
+#context-understanding low #or something else
+#diff-understanding low #or something else
+#thoroughness low
+result !
+priority panic
+
+Backdoor?
+#+END_example
+
+"This looks a bit bad" could be
+
+#+BEGIN_example
+<header>
+#context-understanding low #or something else
+#diff-understanding low #or something else
+#thoroughness low
+result !
+#priority low
+
+Combined with X can lead to a low-impact security issue Y.
+#+END_example
+
+"WTF is this? This should be reconsidered!" could be
+
+#+BEGIN_example
+<header>
+context-understanding high
+diff-understanding medium
+#thoroughness low
+result -
+priority panic
+
+Please, revert! I think this will break X, which would be very high-impact!
+#+END_example
+
+CVE:
+
+#+BEGIN_example
+commit <commit-id> diff
+with <commit-id with a fix>
+context-understanding high
+diff-understanding high
+thoroughness high
+result +    # if "with" commit is applied
+#result-otherwise !
+priority panic
+
+This commit has a very high-impact open CVE! Fixed in <commit-id with a fix>, apply that immediately!
+#+END_example
