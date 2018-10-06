@@ -1,4 +1,5 @@
 # Copyright (C) 2018 Jan Malakhovski
+# Copyright (C) 2018 Leo Gaspard
 # Permission is granted to copy, distribute and/or modify this document
 # under the terms of the GNU Free Documentation License, Version 1.3
 # or any later version published by the Free Software Foundation;
@@ -163,6 +164,9 @@ of other reviewers
 - "+" = "I approve".
 
 "priority": self-explanatory.
+
+Unknown metadata fields with names starting with `x-` MAY be either ignored or processed in an implementation-dependent way.
+Other unknown metadata fields SHOULD trigger a warning and MUST cause the review to be ignored.
 
 ** Examples
 
